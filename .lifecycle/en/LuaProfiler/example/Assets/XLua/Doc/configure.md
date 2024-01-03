@@ -1,0 +1,141 @@
+
+# xLua Configuration
+
+All xLua configurations support three methods: tagging, static lists, and dynamic lists.
+
+There are two musts and two suggestions for configuration:
+
+* List methods must be static fields/properties
+* List methods must be placed within a static class
+* It is suggested not to use tagging
+* It is suggested that list configurations be placed in the Editor directory (if it is a Hotfix configuration and the class is located in dlls other than Assembly-CSharp.dll, it must be placed in the Editor directory)
+
+**Tagging**
+
+xLua uses a whitelist to indicate which codes to generate, and the whitelist is configured through attributes. For example, if you want to call a c# class from lua and wish to generate adapter code, you can tag this type with a LuaCallCSharp attribute:
+
+```csharp
+
+[LuaCallCSharp]
+public class A
+{
+
+}
+
+```
+
+This method is convenient, but it will increase the code size under il2cpp, so it is not recommended.
+
+**Static List**
+
+Sometimes we cannot tag a type directly, such as system APIs, libraries without source code, or instantiated generic types. In this case, you can declare a static field in a static class. The field type, except for BlackList and AdditionalProperties, just needs to implement IEnumerable&lt;Type&gt; (these two exceptions will be specifically addressed later), and then add a tag to this field:
+
+```csharp
+
+[LuaCallCSharp]
+public static List<Type> mymodule_lua_call_cs_list = new List<Type>()
+{
+    typeof(GameObject),
+    typeof(Dictionary<string, int>),
+};
+
+```
+
+This field needs to be placed within a **static class**, and it is recommended to place it in the **Editor directory**.
+
+**Dynamic List**
+
+Declare a static property and tag it accordingly.
+
+```csharp
+
+[Hotfix]
+public static IEnumerable<Type> by_property
+{
+    get
+    {
+        return (from type in Assembly.Load("Assembly-CSharp").GetTypes()
+                where type.Namespace == "XXXX"
+                select type).ToList();
+    }
+}
+
+```
+
+The getter is code, and you can implement many effects, such as configuring by namespace or by assembly, etc.
+
+This property needs to be placed within a **static class**, and it is recommended to place it in the **Editor directory**.
+
+### XLua.LuaCallCSharp
+
+If a C# type has this configuration, xLua will generate adapter code for the type (including constructing instances of the type, accessing its member properties/methods, and static properties/methods). Otherwise, it will attempt to access it using reflection, which is less performant.
+
+Extension methods of a type with this configuration will also have adapter code generated and appended to the member methods of the extended type.
+
+xLua will only generate code for types with this configuration added and will not automatically generate adapter code for their parent classes. When accessing a parent class method from a subclass object, if the parent class has the LuaCallCSharp configuration, the parent class's adapter code will be executed; otherwise, reflection will be used.
+
+Reflective access not only has poor performance but may also be inaccessible due to code stripping under il2cpp. This can be avoided by using the ReflectionUse tag described below.
+
+### XLua.ReflectionUse
+
+If this configuration is added to a C# type, xLua will generate a link.xml to prevent code stripping by il2cpp.
+
+Extension methods must have LuaCallCSharp or ReflectionUse added to be accessible.
+
+It is recommended that all types to be accessed in Lua either have LuaCallCSharp or ReflectionUse added to ensure they work correctly on all platforms.
+
+### XLua.DoNotGen
+
+Indicates that certain functions, fields, and properties within a class should not generate code and should be accessed via reflection.
+
+Only Dictionary<Type, List<string>> fields or properties are allowed. The key specifies the class in effect, and the value is a list of names of functions, fields, and properties that should not generate code.
+
+The difference from ReflectionUse is: 1. ReflectionUse specifies the entire class; 2. When a function (field, property) is accessed for the first time, ReflectionUse wraps the entire class, while DoNotGen only wraps that function (field, property), making DoNotGen more lazy.
+
+The difference from BlackList is: 1. Configured BlackList items cannot be used; 2. BlackList can specify a particular overloaded function, but DoNotGen cannot.
+
+### XLua.CSharpCallLua
+
+If you want to adapt a Lua function to a C# delegate (one scenario is C# side callbacks: UI events, delegate parameters, such as List&lt;T&gt;:ForEach; another scenario is binding a Lua function to a delegate through LuaTable's Get function) or adapt a Lua table to a C# interface, that delegate or interface needs this configuration.
+
+### XLua.GCOptimize
+
+A C# pure value type (note: refers to a struct that only contains value types, which can nest other structs containing only value types) or a C# enum value with this configuration added will have gc optimization code generated by xLua. The effect is that this value type does not produce (C#) gc alloc when passed between Lua and C#, and accessing this type's array does not produce gc. For various no-gc scenarios, refer to the 05_NoGc example.
+
+Besides enums, complex types with parameterless constructors will have Lua table to type conversion code generated, as well as for the type's one-dimensional array, optimizing conversion performance and reducing gc allocs.
+
+### XLua.AdditionalProperties
+
+This is an extension of GCOptimize. Sometimes, some structs prefer to have private fields accessed through properties. In this case, this configuration is needed (by default, GCOptimize only unpacks public fields).
+
+The tagging method is simple, but the configuration method is more complex. It requires a Dictionary<Type, List<string>> type, where the Dictionary's Key is the type to be effective, and the Value is a list of property names. See XLua's configuration for several UnityEngine value types in the SysGCOptimize class for reference.
+
+### XLua.BlackList
+
+If you do not want to generate adapter code for some members of a type, you can achieve this through this configuration.
+
+The tagging method is simple, just add it to the corresponding member.
+
+Since it may be necessary to blacklist one of the overloaded functions, the configuration method is more complex. The type is List<List<string>>, with each member having an entry in the first-level List. The second-level List is a list of strings, the first string is the full path name of the type, the second string is the member name, and if the member is a method, from the third string onwards, list the full path names of its parameter types.
+
+For example, below is a blacklist for a property of GameObject and a method of FileInfo:
+
+```csharp
+
+[BlackList]
+public static List<List<string>> BlackList = new List<List<string>>()  {
+    new List<string>(){"UnityEngine.GameObject", "networkView"},
+    new List<string>(){"System.IO.FileInfo", "GetAccessControl", "System.Security.AccessControl.AccessControlSections"},
+};
+
+```
+
+### The following configurations must be placed in the Editor directory during the generation phase.
+
+### CSObjectWrapEditor.GenPath
+
+Configure the path where the generated code is placed, which is a string type. By default, it is placed under "Assets/XLua/Gen/".
+
+### CSObjectWrapEditor.GenCodeMenu
+
+This configuration is for secondary development of the engine. A function with no parameters tagged with this tag will trigger the execution of this function when the "XLua/Generate Code" menu is executed.
